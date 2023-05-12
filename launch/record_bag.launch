@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="bag_file" default="/home/leo/Documents/cofruit/bags/placeuk.bag" />
+    
+    <node pkg="rosbag" type="record" name="rosbag_record_thermal"
+        args="record -o $(arg bag_file) /camera/aligned_depth_to_color/image_raw /camera/color/image_raw /camera/image_raw"/>   
+</launch>

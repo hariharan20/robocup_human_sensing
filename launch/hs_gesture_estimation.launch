@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="config_direct" default="" /> 
+    
+    <node pkg="robocup_human_sensing" type="gesture_estimation.py" name="hs_gesture_estimation" output="screen" >
+        <param name="config_direct" value="$(arg config_direct)"/>
+    </node>
+
+</launch>
+
+
