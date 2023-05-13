@@ -4,8 +4,6 @@
 import rospy #tf
 import message_filters #to sync the messages
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import Pose
-from tf.transformations import euler_from_quaternion
 import sys
 from math import * #to avoid prefix math.
 import numpy as np #to use matrix
@@ -15,7 +13,7 @@ import cv2
 import yaml
 from cv_bridge import CvBridge
 import joblib
-from robocup_human_sensing.msg import IdsList, NormalizedRegionOfInterest2D, BodyPosture, Gesture
+from robocup_human_sensing.msg import IdsList, RegionOfInterest2D, BodyPosture, Gesture
 
 ##########################################################################################
 #GENERAL PURPUSES VARIABLES
@@ -26,11 +24,10 @@ config_direct=rospy.get_param("/hs_gesture_estimation/config_direct")
 a_yaml_file = open(config_direct+"global_config.yaml")
 parsed_yaml_file = yaml.load(a_yaml_file, Loader=yaml.FullLoader)
 ##SKELETON EXTRACTION USING OPENPOSE
-gesture_classifier_model=rospy.get_param("/hs_gesture_estimation/gesture_classifier_model") 
+gesture_classifier_model=parsed_yaml_file.get("directories_config").get("gesture_classifier_model") 
 model_rf = joblib.load(gesture_classifier_model)   
-selected_joints=parsed_yaml_file.get("openpose_config").get("skeleton_extract_param")
-n_joints=len(selected_joints)
-n_features=parsed_yaml_file.get("openpose_config").get("n_features")
+n_joints=parsed_yaml_file.get("openpose_config").get("skeleton_extract_param")
+n_features=len([0]*n_joints)+len([0]*(n_joints-2)) # features used for gesture recognition, distances+angles
 joints_min=parsed_yaml_file.get("openpose_config").get("joints_min")
 performance_default="normal" #OpenPose performance, can be "normal" or "high", "normal" as initial condition
 ##OPENPOSE INITIALIZATION 
@@ -71,9 +68,10 @@ class human_class:
         #Variables to store temporally the info of human detectection at each time instant
         self.n_human=1 # considering 1 human detected initially
         self.ids=["id1"] #list with string corresponding to the IDs of the people detected
-        self.roi=np.zeros([self.n_human,4]) #the top-leftmost and bottom-rightmost coordinates of a Region of Interest (ROI) normalized from 0 to 1
+        self.roi=np.zeros([self.n_human,4],np.int16) #the top-leftmost coordinates and size of a Region of Interest (ROI) normalized from 0 to 1 [x,y,w,h]
         self.gesture=np.zeros([self.n_human,2]) #Gesture label with the corresponding confidence level from 0 to 1
         self.posture=np.zeros([self.n_human,2]) #Body posture label with the corresponding confidence level from 0 to 1
+        self.orientation=np.zeros([self.n_human,2]) #Body Orientation label with the corresponding confidence level from 0 to 1
         self.performance=performance_default #performance for openpose     
     
     def rgbd_callback(self,rgb, depth):
@@ -83,24 +81,26 @@ class human_class:
             n_human=self.n_human
             gesture=np.zeros([n_human,2])
             posture=np.zeros([n_human,2])
+            orientation=np.zeros([n_human,2])
             ##################################################################################33
             #Color image
             color_image = bridge.imgmsg_to_cv2(rgb,"bgr8")
             #Depth image
             depth_image = bridge.imgmsg_to_cv2(depth,"32FC1")
-            depth_array= np.array(depth_image, dtype=np.float32)/1000
+            depth_array= np.array(depth_image, dtype=np.float32)/1000    
             image_size = color_image.shape
             for i in range(0,n_human):
                 ##############################################
-                #JUST FOR TESTING USE THE FULL IMAGE
-                roi[i,0]=0
-                roi[i,1]=0
-                roi[i,2]=image_size[0]
-                roi[i,3]=image_size[1]
+                #JUST FOR TESTING USE THE FULL IMAGE               
+                roi[i,0]=0 #x
+                roi[i,1]=0 #y
+                roi[i,2]=int(0.5*image_size[1]) #w
+                roi[i,3]=int(0.5*image_size[0]) #h
+                #roi=int(roi)
                 ##############################################
-                color_crop = color_image.crop((roi[i,0], roi[i,1], roi[i,2], roi[i,3]))
-                depth_crop = depth_array.crop((roi[i,0], roi[i,1], roi[i,2], roi[i,3]))
-                [gesture[i,:],posture[i,:],image_show]=self.processing(color_crop,depth_crop)
+                color_crop = color_image[roi[i,1]:roi[i,0]+roi[i,3], roi[i,0]:roi[i,1]+roi[i,2]].copy() 
+                depth_crop = depth_array[roi[i,1]:roi[i,0]+roi[i,3], roi[i,0]:roi[i,1]+roi[i,2]].copy() 
+                [gesture[i,:],posture[i,:],orientation[i,:],image_show]=self.processing(color_crop,depth_crop)
             #Publish last OPENPOSE output as an image
             scaling=0.5
             openpose_image=cv2.resize(image_show,(int(image_show.shape[1]*scaling),int(image_show.shape[0]*scaling))) #resizing it 
@@ -113,26 +113,40 @@ class human_class:
             msg_img.data = np.array(openpose_image).tobytes()
             pub_img.publish(msg_img)
             #Publish gesture message
-            
+            msg_gesture.header.stamp = rospy.Time.now()
+            msg_gesture.ids=ids   
+            msg_gesture.gesture=[int(x) for x in list(gesture[:,0])] #to ensure publish int   
+            msg_gesture.gesture_confidence=[round(x,2) for x in list(gesture[:,1])] #to ensure publish only 2 decimals 
+            pub_gesture.publish(msg_gesture)
             #Publish body posture message
-
+            msg_posture.header.stamp = rospy.Time.now()
+            msg_posture.ids=ids   
+            msg_posture.posture=[int(x) for x in list(posture[:,0])] #to ensure publish int  
+            msg_posture.posture_confidence=[round(x,2) for x in list(posture[:,1])] #to ensure publish only 2 decimals   
+            msg_posture.orientation=[int(x) for x in list(orientation[:,0])] #to ensure publish int  
+            msg_posture.orientation_confidence=[round(x,2) for x in list(orientation[:,1])] #to ensure publish only 2 decimals  
+            pub_posture.publish(msg_posture)
+            
+            self.gesture=gesture
+            self.posture=posture
+            self.orientation=orientation
             #######################################################################################
     
-    def roi_ids_callback(self,roi,ids):
-        n_human=len(ids)
+    def roi_ids_callback(self,data):
+        n_human=len(data.ids)
         roi=np.zeros([n_human,4]) 
         if n_human==0:
             self.performance="low"
             opWrapper.stop() # to stop openpose
         else: # there is at least a human detected
             for i in range(0,n_human):
-                roi[i,0]=roi.xmin
-                roi[i,1]=roi.ymin
-                roi[i,2]=roi.xmax
-                roi[i,3]=roi.ymax
+                roi[i,0]=data.x
+                roi[i,1]=data.y
+                roi[i,2]=data.w
+                roi[i,3]=data.h
         self.roi=roi
-        self.n_human=len(ids)
-        self.ids=ids
+        self.n_human=n_human
+        self.ids=data.ids
     
     def processing(self,color_image,depth_array):
         performance_past=self.performance                  
@@ -163,26 +177,34 @@ class human_class:
         keypoints=datum.poseKeypoints
         if keypoints is None: #if there is no human skeleton detected
             #print('No skeleton extracted')
-            gesture=np.zeros([1,2]) 
-            posture=np.zeros([1,2]) 
+            gesture=np.zeros([1,2]) # Gesture is "Unknown" and confidence is 0
+            posture=np.zeros([1,2]) # Posture is "Unknown" and confidence is 0
+            orientation=np.zeros([1,2]) # Orientation is "Unknown" and confidence is 0
         else: 
             #Feature extraction
-            [gesture,posture]=self.gesture_estimation(keypoints,depth_array)             
+            [gesture,posture,orientation]=self.gesture_estimation(keypoints,depth_array)             
         image_show=datum.cvOutputData #for visualization             
-        return gesture,posture,image_show
+        return gesture,posture,orientation,image_show
         #######################################################################################
         
         
     def gesture_estimation(self,poseKeypoints,depth_array):
-        gesture=np.zeros([1,2])
-        posture=np.zeros([1,2])
+        gesture=np.zeros([1,2]) # Unknow and 0 confidence by default
+        posture=np.zeros([1,2]) # Unknow and 0 confidence by default
+        orientation=np.zeros([1,2]) # Unknow and 0 confidence by default
         features=np.zeros([1,n_features]) 
+        legs=False # No legs detected by Default
         index=0 #in case of multiple skeleton detection, condiser only the first skeleton in poseKeypoints
         #Using only the important joints
         joints_x_init=poseKeypoints[index,0:n_joints,0]
-        joints_y_init=poseKeypoints[index,0:n_joints,1]   
+        joints_y_init=poseKeypoints[index,0:n_joints,1] 
         joints_z_init=[0]*n_joints   
         for k in range(0,n_joints):
+         #in case keypoints are out of image range
+            if int(joints_y_init[k])>=len(depth_array[:,0]):
+                joints_y_init[k]=len(depth_array[:,0])-1
+            if int(joints_x_init[k])>=len(depth_array[0,:]):
+                joints_x_init[k]=len(depth_array[0,:])-1
             joints_z_init[k]=depth_array[int(joints_y_init[k]),int(joints_x_init[k])]
         #Normalization and scaling
         #Translation
@@ -216,7 +238,7 @@ class human_class:
             dist=[0]*n_joints
             for k in range(0,n_joints):
                dist[k]=sqrt((joints_x[k]-joints_x[1])**2+(joints_y[k]-joints_y[1])**2+(joints_z[k]-joints_z[1])**2)         
-            #Vectors between joints
+            #Vectors between joints     
             v1_2=[joints_x[1]-joints_x[2], joints_y[1]-joints_y[2], joints_z[1]-joints_z[2]]  
             v2_3=[joints_x[2]-joints_x[3], joints_y[2]-joints_y[3], joints_z[2]-joints_z[3]]  
             v3_4=[joints_x[3]-joints_x[4], joints_y[3]-joints_y[4], joints_z[3]-joints_z[4]]  
@@ -224,19 +246,20 @@ class human_class:
             v5_6=[joints_x[5]-joints_x[6], joints_y[5]-joints_y[6], joints_z[5]-joints_z[6]]  
             v6_7=[joints_x[6]-joints_x[7], joints_y[6]-joints_y[7], joints_z[6]-joints_z[7]]  
             v1_0=[joints_x[1]-joints_x[0], joints_y[1]-joints_y[0], joints_z[1]-joints_z[0]]  
-            v0_15=[joints_x[0]-joints_x[15], joints_y[0]-joints_y[15], joints_z[0]-joints_z[15]]  
-            v15_17=[joints_x[15]-joints_x[17], joints_y[15]-joints_y[17], joints_z[15]-joints_z[17]]  
-            v0_16=[joints_x[0]-joints_x[16], joints_y[0]-joints_y[16], joints_z[0]-joints_z[16]]
-            v16_18=[joints_x[16]-joints_x[18], joints_y[16]-joints_y[18], joints_z[16]-joints_z[18]]  
+            v0_15=[joints_x[0]-joints_x[11], joints_y[0]-joints_y[11], joints_z[0]-joints_z[11]]  
+            v15_17=[joints_x[11]-joints_x[13], joints_y[11]-joints_y[13], joints_z[11]-joints_z[13]]  
+            v0_16=[joints_x[0]-joints_x[12], joints_y[0]-joints_y[12], joints_z[0]-joints_z[12]]
+            v16_18=[joints_x[12]-joints_x[14], joints_y[12]-joints_y[14], joints_z[12]-joints_z[14]]  
             v1_8=[joints_x[1]-joints_x[8], joints_y[1]-joints_y[8], joints_z[1]-joints_z[8]]
             v8_9=[joints_x[8]-joints_x[9], joints_y[8]-joints_y[9], joints_z[8]-joints_z[9]]  
             v9_10=[joints_x[9]-joints_x[10], joints_y[9]-joints_y[10], joints_z[9]-joints_z[10]]  
             v10_11=[joints_x[10]-joints_x[11], joints_y[10]-joints_y[11], joints_z[10]-joints_z[11]]  
-            v8_12=[joints_x[8]-joints_x[12], joints_y[8]-joints_y[12], joints_z[8]-joints_z[12]]  
+            v8_12=[joints_x[8]-joints_x[10], joints_y[8]-joints_y[10], joints_z[8]-joints_z[10]]  
             v12_13=[joints_x[12]-joints_x[13], joints_y[12]-joints_y[13], joints_z[12]-joints_z[13]]  
-            v13_14=[joints_x[13]-joints_x[14], joints_y[13]-joints_y[14], joints_z[13]-joints_z[14]]    
+            v13_14=[joints_x[13]-joints_x[14], joints_y[13]-joints_y[14], joints_z[13]-joints_z[14]] 
+            
             #Angles between joints  
-            angles=[0]*(n_joints-2) #17 angles
+            angles=[0]*(n_joints-2) #13 angles
             angles[0] = atan2(LA.norm(np.cross(v15_17,v0_15)),np.dot(v15_17,v0_15))
             angles[1] = atan2(LA.norm(np.cross(v0_15,v1_0)),np.dot(v0_15,v1_0))
             angles[2] = atan2(LA.norm(np.cross(v16_18,v0_16)),np.dot(v16_18,v0_16))
@@ -251,41 +274,42 @@ class human_class:
             angles[11] = atan2(LA.norm(np.cross(v1_8,v8_9)),np.dot(v1_8,v8_9))
             angles[12] = atan2(LA.norm(np.cross(v8_9,v9_10)),np.dot(v8_9,v9_10))
             angles[13] = atan2(LA.norm(np.cross(v9_10,v10_11)),np.dot(v9_10,v10_11))
-            angles[14] = atan2(LA.norm(np.cross(v1_8,v8_12)),np.dot(v1_8,v8_12))
+            angles[12] = atan2(LA.norm(np.cross(v1_8,v8_12)),np.dot(v1_8,v8_12))
             angles[15] = atan2(LA.norm(np.cross(v8_12,v12_13)),np.dot(v8_12,v12_13))
-            angles[16] = atan2(LA.norm(np.cross(v12_13,v13_14)),np.dot(v12_13,v13_14))           
+            angles[16] = atan2(LA.norm(np.cross(v12_13,v13_14)),np.dot(v12_13,v13_14))
             #HUMAN FEATURES CALCULATION
             features=dist+angles  
             #HUMAN GESTURE RECOGNITION
             X=np.array(features).transpose()
-            gesture[0]=model_rf.predict([X])
+            gesture[0,0]=model_rf.predict([X])
             prob_max=0
             prob=model_rf.predict_proba([X])
             for ii in range(0,prob.shape[1]): #depends of the number of gestures to classified
                 if prob[0,ii]>=prob_max:
                     prob_max=prob[0,ii]
-            gesture[1]=prob_max 
-        else:
-            gesture[0]=0 # No gesture
-            gesture[1]=1 # 1 confidence
+            gesture[0,1]=prob_max
+            #Sitting or standing inference
+            legs=True # initial assumption that legs are detected
+            for k in range(0,n_joints):
+                if k>=10 and k<=14: #Only consider keypoints in the lower part of the body
+                    if joints_x[k]==0 and joints_y[k]==0: #if at least one joint is not detected, then assume no legs are detected
+                        legs=False
+        
         ########################################################################
-        #BODY POSTURE RECOGNITION
-        #Orientation inference using nose, ears, eyes keypoints
-        orientation=0 # "facing the robot" by default
+        #BODY ORIENTATION INFERENCE using nose, ears, eyes keypoints
         if poseKeypoints[index,0,0]!=0 and poseKeypoints[index,15,0]!=0 and poseKeypoints[index,16,0]!=0 : 
-            orientation=0 #"facing the robot" 
+            orientation[0,0]=1 #"facing the robot" 
+            orientation[0,1]=1 # confidence is 1 
         elif poseKeypoints[index,0,0]==0 and poseKeypoints[index,15,0]==0 and poseKeypoints[index,16,0]==0 : 
-            orientation=1 #"giving the back"
-        elif poseKeypoints[kk,0,0]!=0 and (poseKeypoints[kk,15,0]==0 and poseKeypoints[kk,17,0]==0)  and poseKeypoints[kk,16,0]!=0: 
-            orientation=2 #"showing the left side"
-        elif poseKeypoints[kk,0,0]!=0 and poseKeypoints[kk,15,0]!=0 and (poseKeypoints[kk,18,0]==0 and poseKeypoints[kk,16,0]==0): 
-            orientation=3 #"showing the right side"
-        #Sitting or standing inference
-        legs=True # initial assumption that legs are detected
-        for k in range(0,n_joints):
-            if k>=10 and k<=14: #Only consider keypoints in the lower part of the body
-                if joints_x[k]==0 and joints_y[k]==0: #if at least one joint is not detected, then assume no legs are detected
-                    legs=False
+            orientation[0,0]=2 #"giving the back"
+            orientation[0,1]=1 # confidence is 1 
+        elif poseKeypoints[index,0,0]!=0 and (poseKeypoints[index,15,0]==0 and poseKeypoints[index,17,0]==0)  and poseKeypoints[index,16,0]!=0: 
+            orientation[0,0]=3 #"showing the left side"
+            orientation[0,1]=1 # confidence is 1 
+        elif poseKeypoints[index,0,0]!=0 and poseKeypoints[index,15,0]!=0 and (poseKeypoints[index,18,0]==0 and poseKeypoints[index,16,0]==0): 
+            orientation[0,0]=4 #"showing the right side"
+            orientation[0,1]=1 # confidence is 1 
+        #BODY POSTURE RECOGNITION 
         if legs==True:
             d9_10=abs(joints_y[9]-joints_y[10])
             d12_13=abs(joints_y[12]-joints_y[13])
@@ -293,35 +317,17 @@ class human_class:
             d10_11=abs(joints_y[11]-joints_y[10])
             d14_13=abs(joints_y[14]-joints_y[13])
             d_mean_2=(d10_11+d14_13)/2
-            if d_mean_1<=0.3*d_mean_2:
-                standing=False
-            else:
-                standing=True       
-        else: # if not legs are detected, then assume standing is False
-            standing=False
-            
-        #Final inference based on standing and orientation variables           
-        if standing==True:    
-            posture[0]=orientation
-        else:
-            posture[0]=orientation+4
-        posture[1]=1 # 1 confidence
-        return gesture, posture
-        
-################################################################################################
-        
-class robot_class:
-    def __init__(self): #It is done only the first iteration
-        self.position=[0,0,0]
+            if d_mean_1<=0.3*d_mean_2: # if sitting
+                posture[0,0]=2
+            else: # then standing   
+                posture[0,0]=1
+            posture[0,1]=1 # 1 confidence
+        else: # if not legs are detected, then posture is "Unknown"
+            posture[0,0]=0 # posture is "Unknown"
+            posture[0,1]=0 # 0 confidence
 
-    def robot_pose_callback(self,pose):
-        self.position[0]=pose.position.x
-        self.position[1]=pose.position.y
-        quat = pose.orientation    
-        # From quaternion to Euler
-        angles = euler_from_quaternion((quat.x,quat.y,quat.z,quat.w))
-        theta = angles[2]
-        self.position[2]=np.unwrap([theta])[0]
+        return gesture, posture, orientation
+        
         
 ###############################################################################################
 # Main Script
@@ -330,23 +336,14 @@ if __name__ == '__main__':
     # Initialize our node
     time_init=time.time() 
     human=human_class()  
-    robot=robot_class()
     rospy.init_node('gesture_estimator',anonymous=True)
     # Setup and call subscription
-    rospy.Subscriber('/robot_pose', Pose, robot.robot_pose_callback) 
-    ids_sub=message_filters.Subscriber('/people_ids', IdsList) 
-    roi_sub=message_filters.Subscriber('/people_roi', NormalizedRegionOfInterest2D) 
-    ts1 = message_filters.ApproximateTimeSynchronizer([roi_sub,ids_sub], 5, 1)
-    ts1.registerCallback(human.roi_ids_callback)
-   
+    rospy.Subscriber('/people_roi', RegionOfInterest2D,human.roi_ids_callback) 
     image_front_sub = message_filters.Subscriber(camera_topics[0], Image) 
     depth_front_sub = message_filters.Subscriber(camera_topics[1], Image) 
-    ts2 = message_filters.ApproximateTimeSynchronizer([image_front_sub, depth_front_sub], 5, 1)
-    ts2.registerCallback(human.rgbd_callback)
+    ts = message_filters.ApproximateTimeSynchronizer([image_front_sub, depth_front_sub], 5, 1)
+    ts.registerCallback(human.rgbd_callback)
     #Rate setup
     rate = rospy.Rate(1/pub_hz) # main loop frecuency in Hz
-    while not rospy.is_shutdown():
-        
-        #if human.new_data==True:
-        #    human.new_data=False   
+    while not rospy.is_shutdown(): 
         rate.sleep() #to keep fixed the publishing loop rate

@@ -55,7 +55,7 @@ add_message_files(
    BodyPosture.msg
    Gesture.msg
    IdsList.msg
-   NormalizedRegionOfinterest2D.msg
+   RegionOfInterest2D.msg
    SoftBiometrics.msg
  )
 

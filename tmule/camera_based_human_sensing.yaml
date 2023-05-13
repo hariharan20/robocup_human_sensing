@@ -34,7 +34,7 @@ init_cmd: |
 windows:
 - name: bag_files
   panes:
-  - sleep 2 ; if $USE_BAG ; then roslaunch gofar_safety bags_data_rgbd.launch bag_file:=$BAG_FILE ; fi
+  - sleep 2 ; if $USE_BAG ; then roslaunch robocup_human_sensing bags_data_rgbd.launch bag_file:=$BAG_FILE ; fi
   check: "rostopic list || ! $USE_BAG"
 - name: tiago_camera
   panes:
@@ -42,8 +42,8 @@ windows:
   cleck: "rostopic list | grep -q /camera/color/image_raw || $USE_BAG"
 - name: human_sensing
   panes:
-  - sleep 2 ; roslaunch gofar_safety hs_gesture_estimation.launch config_direct:=$CONFIG_DIRECT
-  - name: visualization
+  - sleep 2 ; roslaunch robocup_human_sensing hs_gesture_estimation.launch config_direct:=$CONFIG_DIRECT
+- name: visualization
   panes:
   - rosrun web_video_server web_video_server
 #############################################################################################

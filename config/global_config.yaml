@@ -5,7 +5,7 @@
 directories_config:
   open_pose_python: "/home/leo/catkin_ws/src/openpose/build/python"
   open_pose_models: "/home/leo/catkin_ws/src/openpose/models"
-  gesture_classifier_model: "/home/leo/catkin_ws/src/robocup_human_sensing/config/classifier_model_3D_v7.joblib"
+  gesture_classifier_model: "/home/leo/catkin_ws/src/robocup_human_sensing/config/classifier_model_3D_v6.joblib"
   
 ##############################################################################################################################################################
 #Parameters to calibrate human detection, human tracking algorithms
@@ -18,8 +18,7 @@ camera_config:
 openpose_config:
   openpose_normal_performance: "-1x160" # net resolution of the openpose when working on "normal" performance mode, has to be numbers multiple of 16, the default is "-1x368", and the fastest performance is "-1x160", used for human presence monitoring, "-1x320"
   openpose_high_performance: "-1x240" # net resolution of the openpose when working on "high" performance mode, used for gesture recognition, "-1x480"
-  skeleton_extract_param: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18] #list with indexes of the skeleton joints (openpose output) considered important for human detection algorithm
+  skeleton_extract_param: 19 #number of skeleton joints (openpose output) considered important for gesture detection algorithm, 19 means that feet joints are not considered
   joints_min: 4 # minimum number of joints in the skeleton detected that make it a valid detection
-  n_features: 36 # number of features used for gesture classification
   confidence_min: 0.6 # minimim confidence factor used to consider a skeleton detected by Openpose valid or not
   
