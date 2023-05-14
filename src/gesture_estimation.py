@@ -140,10 +140,10 @@ class human_class:
             opWrapper.stop() # to stop openpose
         else: # there is at least a human detected
             for i in range(0,n_human):
-                roi[i,0]=data.x
-                roi[i,1]=data.y
-                roi[i,2]=data.w
-                roi[i,3]=data.h
+                roi[i,0]=data.x[i]
+                roi[i,1]=data.y[i]
+                roi[i,2]=data.w[i]
+                roi[i,3]=data.h[i]
         self.roi=roi
         self.n_human=n_human
         self.ids=data.ids
