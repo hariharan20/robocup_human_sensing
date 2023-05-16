@@ -31,7 +31,7 @@ tmux a
 # Using The Person detection Node and Launch File 
 1. The files use the darknet_ros package from [RSL](https://github.com/leggedrobotics/darknet_ros). Clone the repository and 
 change the "image" arg to image topic from the camera 
-2. Create a Virtual Environment with libraries in person_detection_requirements.txt
+2. Create a Virtual Environment with libraries in human_detection_requirements.txt
 3. In Local Machine, the package was created with `video_stream_opencv` ros package
    To install the package 
   ```
